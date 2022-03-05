@@ -1,5 +1,21 @@
 #include <SDL2/SDL.h>
 #include <stdio.h>
+#include <stdbool.h>
+
+enum key {
+    ONE = 0,
+    TWO,
+    THREE,
+    Q,
+    W,
+    E,
+    A,
+    S,
+    D,
+    Z,
+    X,
+    C
+};
 
 typedef struct _chip8 {
     uint8_t memory[4096];
@@ -10,7 +26,65 @@ typedef struct _chip8 {
     uint16_t pc;
     uint8_t sp;
     uint16_t stack[16];
+    bool keys[12];
 } chip8;
+
+
+bool process_input(chip8 *machine, SDL_Event event)
+{
+    while (SDL_PollEvent(&event)) {
+        if ((SDL_QUIT == event.type) || (SDL_KEYDOWN == event.type && SDL_SCANCODE_ESCAPE == event.key.keysym.scancode)) {
+            return false;
+        }
+
+        enum key k;
+        switch (event.type) {
+            case SDL_KEYDOWN:
+                switch(event.key.keysym.sym) {
+                    case SDLK_1:
+                        k = ONE;
+                        break;
+                    case SDLK_2:
+                        k = TWO;
+                        break;
+                    case SDLK_3:
+                        k = THREE;
+                        break;
+                    case SDLK_q:
+                        k = Q;
+                        break;
+                    case SDLK_w:
+                        k = W;
+                        break;
+                    case SDLK_e:
+                        k = E;
+                        break;
+                    case SDLK_a:
+                        k = A;
+                        break;
+                    case SDLK_s:
+                        k = S;
+                        break;
+                    case SDLK_d:
+                        k = D;
+                        break;
+                    case SDLK_z:
+                        k = Z;
+                        break;
+                    case SDLK_x:
+                        k = X;
+                        break;
+                    case SDLK_c:
+                        k = C;
+                        break;
+                }
+                machine->keys[k] = true;
+                break;
+        }
+    }
+
+    return true;
+}
 
 void fetch_instruction(chip8* cpu)
 {
@@ -185,6 +259,15 @@ void execute_instruction(chip8* cpu)
     {
         uint8_t x = ((opcode >> 8) & 0xF);
         /// TODO input thing
+        if ((opcode & 0xFF) == 0x9E) {
+            if (cpu->keys[x]) {
+                cpu->pc += 1;
+            }
+        } else if ((opcode & 0xFF) == 0xA1) {
+            if (!cpu->keys[x]) {
+                cpu->pc += 1;
+            }
+        }
         break;
     }
     case 0xF:
@@ -195,8 +278,7 @@ void execute_instruction(chip8* cpu)
             case 0x07:
                 cpu->registers[x] = cpu->delay_timer;
             case 0x0A:
-                // XXX keypress
-                cpu->registers[x] = cpu->delay_timer;
+                // wait for key press
             case 0x15:
                 cpu->delay_timer = cpu->registers[x];
             case 0x18:
@@ -232,6 +314,8 @@ void execute_instruction(chip8* cpu)
         break;
     }
     }
+
+    cpu->pc++;
 }
 
 int main(int argc, char **argv)
@@ -296,17 +380,16 @@ int main(int argc, char **argv)
     fclose(fp);
 
     SDL_Event event;
-    int running = 1;
+    bool running = true;
     while (running) {
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, SDL_ALPHA_OPAQUE);
         SDL_RenderClear(renderer);
 
-        while (SDL_PollEvent(&event)) {
-            if ((SDL_QUIT == event.type) || (SDL_KEYDOWN == event.type && SDL_SCANCODE_ESCAPE == event.key.keysym.scancode)) {
-                running = 0;
-                break;
-            }
+        for (int i = 0; i < 16; i++) {
+            machine.keys[i] = false;
         }
+
+        running = process_input(&machine, event);
 
         execute_instruction(&machine);
 
