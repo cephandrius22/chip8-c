@@ -234,7 +234,7 @@ void execute_instruction(chip8* cpu)
     }
 }
 
-int main()
+int main(int argc, char **argv)
 {
     SDL_Init(SDL_INIT_VIDEO);
 
