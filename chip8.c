@@ -2,6 +2,8 @@
 #include <stdio.h>
 #include <stdbool.h>
 
+FILE *f;
+
 enum key {
     ONE = 0,
     TWO,
@@ -27,7 +29,18 @@ typedef struct _chip8 {
     uint8_t sp;
     uint16_t stack[16];
     bool keys[12];
+    uint8_t screen[32][64];
 } chip8;
+
+
+void dump_screen(chip8 *machine) {
+    for (int y = 0; y < 32; y++) {
+        for (int x = 0; x < 64; x++) {
+            fprintf(f, "%d ", machine->screen[y][x]);
+        }
+        fprintf(f, "\n");
+    }
+}
 
 
 bool process_input(chip8 *machine, SDL_Event event)
@@ -90,22 +103,32 @@ void fetch_instruction(chip8* cpu)
 {
 }
 
-void clear_display()
+void clear_display(chip8 *machine)
 {
-
+    uint32_t tex_height = 32;
+    uint32_t tex_width = 64;
+    for (unsigned int tex_y = 0; tex_y < tex_height; tex_y++) {
+        for (unsigned int tex_x = 0; tex_x < tex_width; tex_x++) {
+            machine->screen[tex_y][tex_x] = 0;
+        }
+    }
 }
 
 void execute_instruction(chip8* cpu)
 {
-    uint16_t opcode = (uint16_t)cpu->memory[cpu->sp];
-    uint8_t msb = (uint8_t)(opcode > 8);
+    uint16_t opcode = ((uint16_t) cpu->memory[cpu->pc] << 8) | ((uint16_t) cpu->memory[cpu->pc + 1]);
+    // opcode = (opcode << 8) | (opcode & 0xFF);
+    uint8_t msb = (uint8_t)(opcode >> 8);
     uint8_t lsb = (uint8_t)(opcode & 0xFF);
+
+    fprintf(f, "pc: %04X opcode: %04X\n", cpu->pc, opcode);
+    fprintf(f, "msb: %02X\n", msb);
 
     switch (msb >> 4) {
     case 0x0:
         switch (opcode) {
         case 0x00E0:
-            clear_display();
+            clear_display(cpu);
             break;
         case 0x00EE:
             // return from subroutine
@@ -130,7 +153,7 @@ void execute_instruction(chip8* cpu)
         uint8_t reg_idx = (opcode >> 8) & 0x0F;
         uint16_t kk = opcode & 0xFF;
         if (kk == cpu->registers[reg_idx]) {
-            cpu->pc += 1;
+            cpu->pc += 2;
         }
         break;
     }
@@ -139,7 +162,7 @@ void execute_instruction(chip8* cpu)
         uint8_t reg_idx = (opcode >> 8) & 0x0F;
         uint16_t kk = opcode & 0xFF;
         if (kk != cpu->registers[reg_idx]) {
-            cpu->pc += 1;
+            cpu->pc += 2;
         }
         break;
     }
@@ -148,7 +171,7 @@ void execute_instruction(chip8* cpu)
         uint8_t reg_idx_x = (opcode >> 8) & 0x0F;
         uint8_t reg_idx_y = (opcode >> 4) & 0x0F;
         if (cpu->registers[reg_idx_x] == cpu->registers[reg_idx_y]) {
-            cpu->pc += 1;
+            cpu->pc += 2;
         }
         break;
     }
@@ -223,7 +246,7 @@ void execute_instruction(chip8* cpu)
         uint8_t reg_idx_x = (opcode >> 8) & 0x0F;
         uint8_t reg_idx_y = (opcode >> 4) & 0x0F;
         if (cpu->registers[reg_idx_x] != cpu->registers[reg_idx_y]) {
-            cpu->pc += 1;
+            cpu->pc += 2;
         }
         break;
     }
@@ -251,8 +274,21 @@ void execute_instruction(chip8* cpu)
     {
         uint8_t x = ((opcode >> 8) & 0xF);
         uint8_t y = ((opcode >> 4) & 0xF);
+        x = cpu->registers[x] % 64;
+        y = cpu->registers[y] % 32;
         uint8_t n = (opcode & 0xF);
-        // TODO draw stuff
+        for (int i = 0; i < n; i++) {
+            uint8_t byte = cpu->memory[cpu->I + i];
+            // TODO: fix this, it is messy
+            for (int shift = 0; shift < 8; shift++) {
+                uint8_t bit = (byte >> (7 - shift)) & 1;
+                uint8_t lit = (cpu->screen[y][x + shift] & 0x1) ^ bit;
+                // TODO: handle wraping around display
+                cpu->registers[0xF] = (uint8_t) (lit == 0 && cpu->screen[y][x + shift] > 0);
+                cpu->screen[y][x + shift] = lit;
+            }
+            y++;
+        }
         break;
     }
     case 0xE:
@@ -261,11 +297,11 @@ void execute_instruction(chip8* cpu)
         /// TODO input thing
         if ((opcode & 0xFF) == 0x9E) {
             if (cpu->keys[x]) {
-                cpu->pc += 1;
+                cpu->pc += 2;
             }
         } else if ((opcode & 0xFF) == 0xA1) {
             if (!cpu->keys[x]) {
-                cpu->pc += 1;
+                cpu->pc += 2;
             }
         }
         break;
@@ -315,7 +351,7 @@ void execute_instruction(chip8* cpu)
     }
     }
 
-    cpu->pc++;
+    cpu->pc+=2;
 }
 
 int main(int argc, char **argv)
@@ -323,7 +359,7 @@ int main(int argc, char **argv)
     SDL_Init(SDL_INIT_VIDEO);
 
     SDL_Window* window = SDL_CreateWindow("test", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-        600, 600, SDL_WINDOW_SHOWN);
+        64 * 15, 32 * 15, SDL_WINDOW_SHOWN);
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
 
     SDL_RendererInfo info;
@@ -339,13 +375,12 @@ int main(int argc, char **argv)
     SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
         SDL_TEXTUREACCESS_STREAMING, tex_width, tex_height);
 
-    uint8_t pixels[tex_width * tex_height * 4];
-
     chip8 machine;
+
     machine.pc = 0x200;
     machine.sp = 0;
 
-    FILE* fp = fopen("br8kout.ch8", "rb");
+    FILE* fp = fopen("ibm.ch8", "rb");
     if (fp == NULL) {
         printf("Failed to open file.");
         SDL_DestroyRenderer(renderer);
@@ -379,9 +414,35 @@ int main(int argc, char **argv)
     fread(&machine.memory[0x200], sizeof(machine.memory) - 0x200, 1, fp);
     fclose(fp);
 
+    uint8_t image[tex_width * tex_height * 4];
+
+    for (unsigned int tex_y = 0; tex_y < tex_height; tex_y++) {
+        for (unsigned int tex_x = 0; tex_x < tex_width; tex_x++) {
+            const unsigned int offset = (tex_width * 4 * tex_y) + tex_x * 4;
+            int color = 0;
+            image[offset + 0] = color; // b
+            image[offset + 1] = color; // g
+            image[offset + 2] = color; // r
+            image[offset + 3] = SDL_ALPHA_OPAQUE; // a
+        }
+    }
+
+    f = fopen("sdl.log", "w+");
+    if (f == NULL) {
+
+    }
+
+    fprintf(f, "memory\n");
+    for (int i = 0; i < 4096; i+=2) {
+        uint16_t opcode = ((uint16_t) machine.memory[i]) | (((uint16_t) machine.memory[i + 1]) << 8);
+        fprintf(f, "%02x: %04x\n", i, opcode);
+    }
+
     SDL_Event event;
     bool running = true;
     while (running) {
+        uint64_t start = SDL_GetPerformanceCounter();
+
         SDL_SetRenderDrawColor(renderer, 0, 0, 0, SDL_ALPHA_OPAQUE);
         SDL_RenderClear(renderer);
 
@@ -393,27 +454,38 @@ int main(int argc, char **argv)
 
         execute_instruction(&machine);
 
+        dump_screen(&machine);
+
+        uint32_t tex_height = 32;
+        uint32_t tex_width = 64;
         for (unsigned int tex_y = 0; tex_y < tex_height; tex_y++) {
             for (unsigned int tex_x = 0; tex_x < tex_width; tex_x++) {
-                const unsigned int x = rand() % tex_width;
-                const unsigned int y = rand() % tex_height;
+                uint8_t draw_color = machine.screen[tex_y][tex_x];
 
-                const unsigned int offset = (tex_width * 4 * y) + x * 4;
-                pixels[offset + 0] = rand() % 256; // b
-                pixels[offset + 1] = rand() % 256; // g
-                pixels[offset + 2] = rand() % 256; // r
-                pixels[offset + 3] = SDL_ALPHA_OPAQUE; // a
+                const unsigned int offset = (tex_width * 4 * tex_y) + tex_x * 4;
+                image[offset + 0] = 255 * draw_color; // b
+                image[offset + 1] = 255 * draw_color; // g
+                image[offset + 2] = 255 * draw_color; // r
+                image[offset + 3] = SDL_ALPHA_OPAQUE; // a
             }
         }
 
         SDL_UpdateTexture(
             texture,
             NULL,
-            pixels,
+            image,
             tex_width * 4);
 
         SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
+
+
+        uint64_t end = SDL_GetPerformanceCounter();
+
+        float elapsed_ms = (end - start) / (float) SDL_GetPerformanceFrequency() * 1000.0f;
+
+        // cap to 60 fps
+        SDL_Delay(floor(16.666f - elapsed_ms));
     }
 
     SDL_DestroyRenderer(renderer);
