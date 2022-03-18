@@ -2,7 +2,8 @@
 #include <stdio.h>
 #include <stdbool.h>
 
-FILE *f;
+const int SCREEN_HEIGHT = 32;
+const int SCREEN_WIDTH = 64;
 
 enum key {
     ONE = 0,
@@ -29,19 +30,45 @@ typedef struct _chip8 {
     uint8_t sp;
     uint16_t stack[16];
     bool keys[12];
-    uint8_t screen[32][64];
+    uint8_t screen[SCREEN_HEIGHT][SCREEN_WIDTH];
 } chip8;
 
 
 void dump_screen(chip8 *machine) {
-    for (int y = 0; y < 32; y++) {
-        for (int x = 0; x < 64; x++) {
-            fprintf(f, "%d ", machine->screen[y][x]);
+    for (int y = 0; y < SCREEN_HEIGHT; y++) {
+        for (int x = 0; x < SCREEN_WIDTH; x++) {
+            printf("%d ", machine->screen[y][x]);
         }
-        fprintf(f, "\n");
+        printf("\n");
     }
 }
 
+void dump_memory(chip8 *machine) {
+    for (int i = 0; i < 4096; i+=2) {
+        uint16_t opcode = ((uint16_t) machine->memory[i]) | (((uint16_t) machine->memory[i + 1]) << 8);
+        printf("%02x: %04x\n", i, opcode);
+    }
+}
+
+void push_stack(uint16_t *stack, uint16_t value) {
+    for (int i = 15; i > 0; i--) {
+        stack[i] = stack[i - 1];
+    }
+
+    stack[0] = value;
+
+    // XXX unsure what the behavior is when the stack is full
+}
+
+uint16_t pop_stack(uint16_t *stack) {
+    uint16_t ret = stack[0];
+
+    for (int i = 0; i < 15; i++) {
+        stack[i] = stack[i + 1];
+    }
+
+    return ret;
+}
 
 bool process_input(chip8 *machine, SDL_Event event)
 {
@@ -105,11 +132,9 @@ void fetch_instruction(chip8* cpu)
 
 void clear_display(chip8 *machine)
 {
-    uint32_t tex_height = 32;
-    uint32_t tex_width = 64;
-    for (unsigned int tex_y = 0; tex_y < tex_height; tex_y++) {
-        for (unsigned int tex_x = 0; tex_x < tex_width; tex_x++) {
-            machine->screen[tex_y][tex_x] = 0;
+    for (unsigned int y = 0; y < SCREEN_HEIGHT; y++) {
+        for (unsigned int x = 0; x < SCREEN_WIDTH; x++) {
+            machine->screen[y][x] = 0;
         }
     }
 }
@@ -121,8 +146,11 @@ void execute_instruction(chip8* cpu)
     uint8_t msb = (uint8_t)(opcode >> 8);
     uint8_t lsb = (uint8_t)(opcode & 0xFF);
 
-    fprintf(f, "pc: %04X opcode: %04X\n", cpu->pc, opcode);
-    fprintf(f, "msb: %02X\n", msb);
+
+    printf("pc: %04X opcode: %04X\n", cpu->pc, opcode);
+    printf("msb: %02X\n", msb);
+    
+    cpu->pc+=2;
 
     switch (msb >> 4) {
     case 0x0:
@@ -131,7 +159,7 @@ void execute_instruction(chip8* cpu)
             clear_display(cpu);
             break;
         case 0x00EE:
-            // return from subroutine
+            cpu->pc = pop_stack(cpu->stack);
             break;
         }
         break;
@@ -144,8 +172,8 @@ void execute_instruction(chip8* cpu)
     case 0x2:
     {
         uint16_t call_location = (opcode & 0x0FFF);
-        cpu->stack[0] = cpu->pc; // XXX
-        cpu->sp = call_location;
+        push_stack(cpu->stack, cpu->pc);
+        cpu->pc = call_location;
         break;
     }
     case 0x3:
@@ -178,7 +206,7 @@ void execute_instruction(chip8* cpu)
     case 0x6:
     {
         uint8_t reg_idx = (opcode >> 8) & 0x0F;
-        uint16_t kk = opcode & 0xFF;
+        uint8_t kk = opcode & 0xFF;
         cpu->registers[reg_idx] = kk;
         break;
     }
@@ -193,11 +221,11 @@ void execute_instruction(chip8* cpu)
     {
         uint8_t reg_idx_x = (opcode >> 8) & 0x0F;
         uint8_t reg_idx_y = (opcode >> 4) & 0x0F;
-        if ((opcode & 0x0F) == 0) {
-            cpu->registers[reg_idx_x] = cpu->registers[reg_idx_y];
-        } else {
-            cpu->registers[reg_idx_x] |= cpu->registers[reg_idx_y];
-        }
+        // if ((opcode & 0x0F) == 0) {
+        //     cpu->registers[reg_idx_x] = cpu->registers[reg_idx_y];
+        // } else {
+        //     cpu->registers[reg_idx_x] |= cpu->registers[reg_idx_y];
+        // }
         switch (opcode & 0xF) {
         case 0:
             cpu->registers[reg_idx_x] = cpu->registers[reg_idx_y];
@@ -219,7 +247,8 @@ void execute_instruction(chip8* cpu)
             } else {
                 cpu->registers[0xF] = 0;
             }
-            cpu->registers[reg_idx_x] = (uint8_t)(add & 0xFF);
+            uint8_t add_overflow = cpu->registers[reg_idx_x] + cpu->registers[reg_idx_y];
+            cpu->registers[reg_idx_x] = (add_overflow & 0xFF);
             break;
         }
         case 5:
@@ -227,15 +256,17 @@ void execute_instruction(chip8* cpu)
             cpu->registers[reg_idx_x] -= cpu->registers[reg_idx_y];
             break;
         case 6:
+            cpu->registers[reg_idx_x] = cpu->registers[reg_idx_y];
             cpu->registers[0xF] = (cpu->registers[reg_idx_x] & 0x1);
             cpu->registers[reg_idx_x] = cpu->registers[reg_idx_x] >> 1;
             break;
         case 7:
             cpu->registers[0xF] = (int)(cpu->registers[reg_idx_y] > cpu->registers[reg_idx_x]);
-            cpu->registers[reg_idx_y] -= cpu->registers[reg_idx_x];
+            cpu->registers[reg_idx_x] = cpu->registers[reg_idx_y] - cpu->registers[reg_idx_x];
             break;
-        case 14:
-            cpu->registers[0xF] = ((cpu->registers[reg_idx_x] >> 7) & 0x1);
+        case 0xE:
+            cpu->registers[reg_idx_x] = cpu->registers[reg_idx_y];
+            cpu->registers[0xF] = (cpu->registers[reg_idx_x] & 0x80);
             cpu->registers[reg_idx_x] = cpu->registers[reg_idx_x] << 1;
             break;
         }
@@ -267,15 +298,15 @@ void execute_instruction(chip8* cpu)
         uint8_t k = (opcode & 0xFF);
         uint8_t reg = ((opcode >> 8) & 0xF);
         uint8_t random = rand() % (255 + 1);
-        cpu->registers[reg] &= random;
+        cpu->registers[reg] = random & k;
         break;
     }
     case 0xD:
     {
         uint8_t x = ((opcode >> 8) & 0xF);
         uint8_t y = ((opcode >> 4) & 0xF);
-        x = cpu->registers[x] % 64;
-        y = cpu->registers[y] % 32;
+        x = cpu->registers[x] % SCREEN_WIDTH;
+        y = cpu->registers[y] % SCREEN_HEIGHT;
         uint8_t n = (opcode & 0xF);
         for (int i = 0; i < n; i++) {
             uint8_t byte = cpu->memory[cpu->I + i];
@@ -313,16 +344,25 @@ void execute_instruction(chip8* cpu)
         switch (code) {
             case 0x07:
                 cpu->registers[x] = cpu->delay_timer;
+                break;
             case 0x0A:
                 // wait for key press
+                break;
             case 0x15:
                 cpu->delay_timer = cpu->registers[x];
+                break;
             case 0x18:
                 cpu->sound_timer = cpu->registers[x];
+                break;
             case 0x1E:
                 cpu->I += cpu->registers[x];
+                break;
             case 0x29:
+            {
+                uint8_t hex = cpu->registers[x];
+                cpu->I = hex * 5; // each hex character is 5 bytes
                 break; // sprite thing
+            }
             case 0x33:
             {
                 uint8_t first_digit = cpu->registers[x] % 10;
@@ -331,6 +371,7 @@ void execute_instruction(chip8* cpu)
                 cpu->memory[cpu->I] = third_digit;
                 cpu->memory[cpu->I + 1] = second_digit;
                 cpu->memory[cpu->I + 2] = first_digit;
+                break;
             }
             case 0x55:
             {
@@ -338,6 +379,7 @@ void execute_instruction(chip8* cpu)
                 for (int i = 0; i < 16; i++) {
                     cpu->memory[cpu->I + i] = cpu->registers[i];
                 }
+                break;
             }
             case 0x65:
             {
@@ -345,13 +387,12 @@ void execute_instruction(chip8* cpu)
                 for (int i = 0; i < 16; i++) {
                     cpu->registers[i] = cpu->memory[cpu->I + i];
                 }
+                break;
             }
         }
         break;
     }
     }
-
-    cpu->pc+=2;
 }
 
 int main(int argc, char **argv)
@@ -359,7 +400,7 @@ int main(int argc, char **argv)
     SDL_Init(SDL_INIT_VIDEO);
 
     SDL_Window* window = SDL_CreateWindow("test", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-        64 * 15, 32 * 15, SDL_WINDOW_SHOWN);
+        SCREEN_WIDTH * 15, SCREEN_HEIGHT * 15, SDL_WINDOW_SHOWN);
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
 
     SDL_RendererInfo info;
@@ -370,17 +411,20 @@ int main(int argc, char **argv)
         printf("%s\n", SDL_GetPixelFormatName(info.texture_formats[i]));
     }
 
-    const unsigned int tex_width = 64;
-    const unsigned int tex_height = 32;
     SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888,
-        SDL_TEXTUREACCESS_STREAMING, tex_width, tex_height);
+        SDL_TEXTUREACCESS_STREAMING, SCREEN_WIDTH, SCREEN_HEIGHT);
 
     chip8 machine;
 
     machine.pc = 0x200;
     machine.sp = 0;
 
-    FILE* fp = fopen("ibm.ch8", "rb");
+    if (argc < 2) {
+        printf("Please provide a rom to run.\n");
+        return 0;
+    }
+
+    FILE* fp = fopen(argv[1], "rb");
     if (fp == NULL) {
         printf("Failed to open file.");
         SDL_DestroyRenderer(renderer);
@@ -414,28 +458,17 @@ int main(int argc, char **argv)
     fread(&machine.memory[0x200], sizeof(machine.memory) - 0x200, 1, fp);
     fclose(fp);
 
-    uint8_t image[tex_width * tex_height * 4];
+    uint8_t image[SCREEN_WIDTH * SCREEN_HEIGHT * 4];
 
-    for (unsigned int tex_y = 0; tex_y < tex_height; tex_y++) {
-        for (unsigned int tex_x = 0; tex_x < tex_width; tex_x++) {
-            const unsigned int offset = (tex_width * 4 * tex_y) + tex_x * 4;
+    for (unsigned int y = 0; y < SCREEN_HEIGHT; y++) {
+        for (unsigned int x = 0; x < SCREEN_WIDTH; x++) {
+            const unsigned int offset = (SCREEN_WIDTH * 4 * y) + x * 4;
             int color = 0;
             image[offset + 0] = color; // b
             image[offset + 1] = color; // g
             image[offset + 2] = color; // r
             image[offset + 3] = SDL_ALPHA_OPAQUE; // a
         }
-    }
-
-    f = fopen("sdl.log", "w+");
-    if (f == NULL) {
-
-    }
-
-    fprintf(f, "memory\n");
-    for (int i = 0; i < 4096; i+=2) {
-        uint16_t opcode = ((uint16_t) machine.memory[i]) | (((uint16_t) machine.memory[i + 1]) << 8);
-        fprintf(f, "%02x: %04x\n", i, opcode);
     }
 
     SDL_Event event;
@@ -454,15 +487,13 @@ int main(int argc, char **argv)
 
         execute_instruction(&machine);
 
-        dump_screen(&machine);
+        // dump_screen(&machine);
 
-        uint32_t tex_height = 32;
-        uint32_t tex_width = 64;
-        for (unsigned int tex_y = 0; tex_y < tex_height; tex_y++) {
-            for (unsigned int tex_x = 0; tex_x < tex_width; tex_x++) {
-                uint8_t draw_color = machine.screen[tex_y][tex_x];
+        for (unsigned int y = 0; y < SCREEN_HEIGHT; y++) {
+            for (unsigned int x = 0; x < SCREEN_WIDTH; x++) {
+                uint8_t draw_color = machine.screen[y][x];
 
-                const unsigned int offset = (tex_width * 4 * tex_y) + tex_x * 4;
+                const unsigned int offset = (SCREEN_WIDTH * 4 * y) + x * 4;
                 image[offset + 0] = 255 * draw_color; // b
                 image[offset + 1] = 255 * draw_color; // g
                 image[offset + 2] = 255 * draw_color; // r
@@ -474,7 +505,7 @@ int main(int argc, char **argv)
             texture,
             NULL,
             image,
-            tex_width * 4);
+            SCREEN_WIDTH * 4);
 
         SDL_RenderCopy(renderer, texture, NULL, NULL);
         SDL_RenderPresent(renderer);
